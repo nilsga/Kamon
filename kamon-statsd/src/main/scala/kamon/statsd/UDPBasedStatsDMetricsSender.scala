@@ -20,11 +20,18 @@ import java.net.InetSocketAddress
 import java.text.{ DecimalFormat, DecimalFormatSymbols }
 import java.util.Locale
 
-import akka.actor.{ Actor, ActorRef, ActorSystem }
-import akka.io.{ IO, Udp }
-import akka.util.ByteString
+import akka.actor.{ Actor, ActorLogging, ActorRef, ActorSystem, Props }
+import akka.pattern._
 import com.typesafe.config.Config
+import io.netty.bootstrap.Bootstrap
+import io.netty.channel._
+import io.netty.channel.nio.NioEventLoopGroup
+import io.netty.channel.socket.DatagramPacket
+import io.netty.channel.socket.nio.NioDatagramChannel
 import kamon.metric.SubscriptionsDispatcher.TickMetricSnapshot
+import kamon.statsd.Netty._
+
+import scala.concurrent.{ Future, Promise }
 
 trait StatsDValueFormatters {
 
@@ -53,22 +60,21 @@ abstract class UDPBasedStatsDMetricsSender(statsDConfig: Config, metricKeyGenera
 
   import context.system
 
+  udpExtension ! InitializeChannel
+
   val statsDHost = statsDConfig.getString("hostname")
   val statsDPort = statsDConfig.getInt("port")
-
-  udpExtension ! Udp.SimpleSender
-
   lazy val socketAddress = new InetSocketAddress(statsDHost, statsDPort)
 
   def receive = {
-    case Udp.SimpleSenderReady ⇒
+    case ChannelInitialized ⇒
       context.become(ready(sender))
   }
 
   def ready(udpSender: ActorRef): Receive = {
     case tick: TickMetricSnapshot ⇒
       writeMetricsToRemote(tick,
-        (data: String) ⇒ udpSender ! Udp.Send(ByteString(data), socketAddress))
+        (data: String) ⇒ udpSender ! Send(data, socketAddress))
   }
 
   def writeMetricsToRemote(tick: TickMetricSnapshot, flushToUDP: String ⇒ Unit): Unit
@@ -76,6 +82,50 @@ abstract class UDPBasedStatsDMetricsSender(statsDConfig: Config, metricKeyGenera
 }
 
 trait UdpExtensionProvider {
-  def udpExtension(implicit system: ActorSystem): ActorRef = IO(Udp)
+  def udpExtension(implicit system: ActorSystem): ActorRef = system.actorOf(Props(new NettyUdp))
 }
 
+object Netty {
+  case object InitializeChannel
+  case object ChannelInitialized
+  case class Send(data: String, target: InetSocketAddress)
+  case class ChannelReady(originalSender: ActorRef, channel: Channel)
+
+  implicit lazy val channelHandler = new ChannelInitializer[Channel] {
+    override def initChannel(ch: Channel): Unit = {}
+  }
+
+  implicit def toFuture(channelFuture: ChannelFuture): Future[Channel] = {
+    val promise = Promise[Channel]()
+    channelFuture.addListener(new ChannelFutureListener {
+      override def operationComplete(future: ChannelFuture): Unit = {
+        if (future.isSuccess) promise.success(future.channel())
+        else promise.failure(future.cause())
+      }
+    })
+    promise.future
+  }
+}
+
+class NettyUdp extends Actor with ActorLogging {
+
+  import context.dispatcher
+
+  override def receive: Receive = {
+    case InitializeChannel ⇒
+      log.debug("Initializing netty")
+      val originalSender = sender()
+      new Bootstrap().group(new NioEventLoopGroup()).channel(classOf[NioDatagramChannel]).handler(channelHandler)
+        .bind(new InetSocketAddress(0)).map(ChannelReady(originalSender, _)) pipeTo self
+    case ChannelReady(originalSender, channel) ⇒
+      log.debug("Channel is ready")
+      context.become(ready(channel))
+      originalSender ! ChannelInitialized
+  }
+
+  def ready(channel: Channel): Receive = {
+    case Send(payload, target) ⇒
+      val byteBuf = channel.alloc().buffer(payload.length).writeBytes(payload.getBytes)
+      channel.writeAndFlush(new DatagramPacket(byteBuf, target))
+  }
+}

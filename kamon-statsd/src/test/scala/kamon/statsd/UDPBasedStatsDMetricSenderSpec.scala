@@ -17,12 +17,12 @@
 package kamon.statsd
 
 import akka.actor.Props
-import akka.io.Udp
 import akka.testkit.TestProbe
 import kamon.Kamon
 import kamon.metric.SubscriptionsDispatcher.TickMetricSnapshot
-import kamon.metric.instrument.{ InstrumentFactory, UnitOfMeasurement }
 import kamon.metric._
+import kamon.metric.instrument.{ InstrumentFactory, UnitOfMeasurement }
+import kamon.statsd.Netty.{ ChannelInitialized, InitializeChannel, Send }
 import kamon.testkit.BaseKamonSpec
 import kamon.util.MilliTimestamp
 
@@ -52,8 +52,8 @@ abstract class UDPBasedStatsDMetricSenderSpec(actorSystemName: String) extends B
       val metricsSender = system.actorOf(newSender(udp))
 
       // Setup the SimpleSender
-      udp.expectMsgType[Udp.SimpleSender]
-      udp.reply(Udp.SimpleSenderReady)
+      udp.expectMsg(InitializeChannel)
+      udp.reply(ChannelInitialized)
 
       val fakeSnapshot = TickMetricSnapshot(MilliTimestamp.now, MilliTimestamp.now, metrics)
       metricsSender ! fakeSnapshot
@@ -61,8 +61,8 @@ abstract class UDPBasedStatsDMetricSenderSpec(actorSystemName: String) extends B
     }
 
     def expectUDPPacket(expected: String, udp: TestProbe): Unit = {
-      val Udp.Send(data, _, _) = udp.expectMsgType[Udp.Send]
-      data.utf8String should be(expected)
+      val Send(data, _) = udp.expectMsgType[Send]
+      data.toString should be(expected)
     }
   }
 

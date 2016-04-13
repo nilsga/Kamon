@@ -17,9 +17,9 @@
 package kamon.statsd
 
 import akka.testkit.TestProbe
-import akka.actor.{ ActorRef, Props, ActorSystem }
-import akka.io.Udp
+import akka.actor.{ ActorRef, ActorSystem, Props }
 import com.typesafe.config.ConfigFactory
+import kamon.statsd.Netty.Send
 
 class BatchStatsDMetricSenderSpec extends UDPBasedStatsDMetricSenderSpec("batch-statsd-metric-sender-spec") {
   override lazy val config =
@@ -97,7 +97,7 @@ class BatchStatsDMetricSenderSpec extends UDPBasedStatsDMetricSenderSpec("batch-
       }
 
       val udp = setup(Map(testEntity -> testRecorder.collect(collectionContext)))
-      udp.expectMsgType[Udp.Send] // let the first flush pass
+      udp.expectMsgType[Send] // let the first flush pass
       expectUDPPacket(s"$testMetricKey:$level|ms", udp)
     }
 

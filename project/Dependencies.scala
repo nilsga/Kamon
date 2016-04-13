@@ -29,6 +29,7 @@ object Dependencies {
   val play23Version     = "2.3.10"
   val play24Version     = "2.4.4"
   val elasticsearchVersion = "2.1.0"
+  val nettyVersion = "4.0.36.Final"
 
   val sprayJson         = "io.spray"                  %%  "spray-json"            % "1.3.1"
   val sprayJsonLenses   = "net.virtual-void"          %%  "json-lenses"           % "0.6.0"
@@ -56,6 +57,7 @@ object Dependencies {
   val el                = "org.glassfish"             %   "javax.el"              % "3.0.0"
   val fluentdLogger     = "org.fluentd"               %%  "fluent-logger-scala"   % "0.5.1"
   val easyMock          = "org.easymock"              %   "easymock"              % "3.2"
+  val netty             = "io.netty"                  %   "netty-transport"       % nettyVersion
 
   //play 2.3.x
   val play23            = "com.typesafe.play"         %%  "play"                  % play23Version

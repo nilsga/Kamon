@@ -154,7 +154,7 @@ object Projects extends Build {
     .settings(formatSettings: _*)
     .settings(
       libraryDependencies ++=
-        compile(akkaActor) ++
+        compile(akkaActor, netty) ++
         test(scalatest, akkaTestKit, slf4jApi, slf4jnop))
 
   lazy val kamonDatadog = Project("kamon-datadog", file("kamon-datadog"))
