@@ -16,19 +16,19 @@
 
 package kamon.statsd
 
+import akka.actor.Props
 import akka.testkit.TestProbe
-import akka.actor.{ ActorRef, ActorSystem, Props }
 import com.typesafe.config.ConfigFactory
-import kamon.statsd.Netty.Send
+import io.netty.channel.Channel
 
 class BatchStatsDMetricSenderSpec extends UDPBasedStatsDMetricSenderSpec("batch-statsd-metric-sender-spec") {
   override lazy val config =
     ConfigFactory.parseString(
-      """
+      s"""
         |kamon {
         |  statsd {
         |    hostname = "127.0.0.1"
-        |    port = 0
+        |    port = $port
         |    simple-metric-key-generator {
         |      application = kamon
         |      hostname-override = kamon-host
@@ -44,9 +44,12 @@ class BatchStatsDMetricSenderSpec extends UDPBasedStatsDMetricSenderSpec("batch-
   val testMaxPacketSize = statsDConfig.getBytes("batch-metric-sender.max-packet-size")
 
   trait BatchSenderFixture extends UdpListenerFixture {
-    override def newSender(udpProbe: TestProbe) =
+    override def newSender(syncProbe: TestProbe) =
       Props(new BatchStatsDMetricsSender(statsDConfig, metricKeyGenerator) {
-        override def udpExtension(implicit system: ActorSystem): ActorRef = udpProbe.ref
+        override def ready(channel: Channel): Receive = {
+          syncProbe.ref ! channel
+          super.ready(channel)
+        }
       })
   }
 
@@ -56,9 +59,9 @@ class BatchStatsDMetricSenderSpec extends UDPBasedStatsDMetricSenderSpec("batch-
       val testRecorder = buildRecorder("user/kamon")
       testRecorder.metricOne.record(10L)
 
-      val udp = setup(Map(testEntity -> testRecorder.collect(collectionContext)))
-
-      expectUDPPacket(s"$testMetricKey:10|ms", udp)
+      doWithChannel(Map(testEntity -> testRecorder.collect(collectionContext)), (probe) ⇒ {
+        expectUDPPacket(s"$testMetricKey:10|ms", probe)
+      })
     }
 
     "render several measurements of the same key under a single (key + multiple measurements) packet" in new BatchSenderFixture {
@@ -68,9 +71,9 @@ class BatchStatsDMetricSenderSpec extends UDPBasedStatsDMetricSenderSpec("batch-
       testRecorder.metricOne.record(11L)
       testRecorder.metricOne.record(12L)
 
-      val udp = setup(Map(testEntity -> testRecorder.collect(collectionContext)))
-
-      expectUDPPacket(s"$testMetricKey:10|ms:11|ms:12|ms", udp)
+      doWithChannel(Map(testEntity -> testRecorder.collect(collectionContext)), (probe) ⇒ {
+        expectUDPPacket(s"$testMetricKey:10|ms:11|ms:12|ms", probe)
+      })
     }
 
     "include the correspondent sampling rate when rendering multiple occurrences of the same value" in new BatchSenderFixture {
@@ -79,9 +82,9 @@ class BatchStatsDMetricSenderSpec extends UDPBasedStatsDMetricSenderSpec("batch-
       testRecorder.metricOne.record(10L)
       testRecorder.metricOne.record(10L)
 
-      val udp = setup(Map(testEntity -> testRecorder.collect(collectionContext)))
-
-      expectUDPPacket(s"$testMetricKey:10|ms|@0.5", udp)
+      doWithChannel(Map(testEntity -> testRecorder.collect(collectionContext)), (probe) ⇒ {
+        expectUDPPacket(s"$testMetricKey:10|ms|@0.5", probe)
+      })
     }
 
     "flush the packet when the max-packet-size is reached" in new BatchSenderFixture {
@@ -96,9 +99,10 @@ class BatchStatsDMetricSenderSpec extends UDPBasedStatsDMetricSenderSpec("batch-
         bytes += s":$level|ms".length
       }
 
-      val udp = setup(Map(testEntity -> testRecorder.collect(collectionContext)))
-      udp.expectMsgType[Send] // let the first flush pass
-      expectUDPPacket(s"$testMetricKey:$level|ms", udp)
+      doWithChannel(Map(testEntity -> testRecorder.collect(collectionContext)), (probe) ⇒ {
+        probe.expectMsgType[String] // let the first flush pass
+        expectUDPPacket(s"$testMetricKey:$level|ms", probe)
+      })
     }
 
     "render multiple keys in the same packet using newline as separator" in new BatchSenderFixture {
@@ -113,8 +117,9 @@ class BatchStatsDMetricSenderSpec extends UDPBasedStatsDMetricSenderSpec("batch-
       testRecorder.metricTwo.record(20L)
       testRecorder.metricTwo.record(21L)
 
-      val udp = setup(Map(testEntity -> testRecorder.collect(collectionContext)))
-      expectUDPPacket(s"$testMetricKey1:10|ms|@0.5:11|ms\n$testMetricKey2:20|ms:21|ms", udp)
+      doWithChannel(Map(testEntity -> testRecorder.collect(collectionContext)), (probe) ⇒ {
+        expectUDPPacket(s"$testMetricKey1:10|ms|@0.5:11|ms\n$testMetricKey2:20|ms:21|ms", probe)
+      })
     }
   }
 }

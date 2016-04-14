@@ -16,20 +16,37 @@
 
 package kamon.statsd
 
+import java.net.{ DatagramSocket, InetSocketAddress }
+import java.nio.charset.Charset
+
 import akka.actor.Props
 import akka.testkit.TestProbe
+import io.netty.bootstrap.Bootstrap
+import io.netty.channel.nio.NioEventLoopGroup
+import io.netty.channel.socket.DatagramPacket
+import io.netty.channel.socket.nio.NioDatagramChannel
+import io.netty.channel.{ Channel, ChannelHandlerContext, SimpleChannelInboundHandler }
 import kamon.Kamon
 import kamon.metric.SubscriptionsDispatcher.TickMetricSnapshot
 import kamon.metric._
 import kamon.metric.instrument.{ InstrumentFactory, UnitOfMeasurement }
-import kamon.statsd.Netty.{ ChannelInitialized, InitializeChannel, Send }
 import kamon.testkit.BaseKamonSpec
 import kamon.util.MilliTimestamp
+
+import scala.concurrent.duration._
+import scala.concurrent.{ Await, Future }
 
 abstract class UDPBasedStatsDMetricSenderSpec(actorSystemName: String) extends BaseKamonSpec(actorSystemName) {
 
   implicit val metricKeyGenerator = new SimpleMetricKeyGenerator(system.settings.config) {
     override def hostName: String = "localhost_local"
+  }
+
+  lazy val port = {
+    val socket = new DatagramSocket(0)
+    val port = socket.getLocalPort
+    socket.close()
+    port
   }
 
   val statsDConfig = config.getConfig("kamon.statsd")
@@ -45,24 +62,58 @@ abstract class UDPBasedStatsDMetricSenderSpec(actorSystemName: String) extends B
     def buildRecorder(name: String): TestEntityRecorder =
       Kamon.metrics.entity(TestEntityRecorder, name)
 
-    def newSender(udpProbe: TestProbe): Props
+    def newSender(syncProbe: TestProbe): Props
 
-    def setup(metrics: Map[Entity, EntitySnapshot]): TestProbe = {
-      val udp = TestProbe()
-      val metricsSender = system.actorOf(newSender(udp))
+    def setup(metrics: Map[Entity, EntitySnapshot]): (Channel, TestProbe) = {
 
-      // Setup the SimpleSender
-      udp.expectMsg(InitializeChannel)
-      udp.reply(ChannelInitialized)
+      import Netty._
+
+      val probe = TestProbe()
+      val channelFuture: Future[Channel] = new Bootstrap()
+        .channel(classOf[NioDatagramChannel])
+        .group(new NioEventLoopGroup())
+        .handler(new PacketProbeRepeater(probe))
+        .bind(new InetSocketAddress(port))
+
+      val channel = Await.result(channelFuture, 10 seconds)
+
+      val metricsSender = system.actorOf(newSender(probe))
+
+      probe.expectMsgType[Channel]
 
       val fakeSnapshot = TickMetricSnapshot(MilliTimestamp.now, MilliTimestamp.now, metrics)
       metricsSender ! fakeSnapshot
-      udp
+      (channel, probe)
     }
 
-    def expectUDPPacket(expected: String, udp: TestProbe): Unit = {
-      val Send(data, _) = udp.expectMsgType[Send]
-      data.toString should be(expected)
+    def teardown(channel: Channel) = {
+
+      import Netty._
+
+      val channelFuture: Future[Channel] = channel.close()
+      Await.ready(channelFuture, 10 seconds)
+    }
+
+    def expectUDPPacket(expected: String, probe: TestProbe): Unit = {
+      val packet = probe.expectMsgType[String]
+      packet should be(expected)
+    }
+
+    def doWithChannel(metrics: Map[Entity, EntitySnapshot], doWithChannel: (TestProbe) ⇒ Unit): Unit = {
+      val (channel, probe) = setup(metrics: Map[Entity, EntitySnapshot])
+      try {
+        doWithChannel(probe)
+      } finally {
+        teardown(channel)
+      }
+    }
+  }
+
+  class PacketProbeRepeater(probe: TestProbe) extends SimpleChannelInboundHandler[DatagramPacket] {
+
+    override def channelRead0(ctx: ChannelHandlerContext, msg: DatagramPacket): Unit = {
+      val message = msg.content().toString(Charset.defaultCharset())
+      probe.ref ! message
     }
   }
 

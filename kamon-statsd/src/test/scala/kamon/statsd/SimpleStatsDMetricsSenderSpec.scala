@@ -16,19 +16,20 @@
 
 package kamon.statsd
 
-import akka.actor.{ ActorSystem, Props, ActorRef }
+import akka.actor.Props
 import akka.testkit.TestProbe
 import com.typesafe.config.ConfigFactory
+import io.netty.channel.Channel
 
 class SimpleStatsDMetricsSenderSpec extends UDPBasedStatsDMetricSenderSpec("simple-statsd-metric-sender-spec") {
 
   override lazy val config =
     ConfigFactory.parseString(
-      """
+      s"""
         |kamon {
         |  statsd {
         |    hostname = "127.0.0.1"
-        |    port = 0
+        |    port = $port
         |    simple-metric-key-generator {
         |      application = kamon
         |      hostname-override = kamon-host
@@ -41,9 +42,12 @@ class SimpleStatsDMetricsSenderSpec extends UDPBasedStatsDMetricSenderSpec("simp
       """.stripMargin)
 
   trait SimpleSenderFixture extends UdpListenerFixture {
-    override def newSender(udpProbe: TestProbe) =
+    override def newSender(syncProbe: TestProbe) =
       Props(new SimpleStatsDMetricsSender(statsDConfig, metricKeyGenerator) {
-        override def udpExtension(implicit system: ActorSystem): ActorRef = udpProbe.ref
+        override def ready(channel: Channel): Receive = {
+          syncProbe.ref ! channel
+          super.ready(channel)
+        }
       })
   }
 
@@ -57,10 +61,11 @@ class SimpleStatsDMetricsSenderSpec extends UDPBasedStatsDMetricSenderSpec("simp
       testRecorder.metricOne.record(30L)
       testRecorder.metricTwo.record(20L)
 
-      val udp = setup(Map(testEntity -> testRecorder.collect(collectionContext)))
-      expectUDPPacket(s"$testMetricKey1:10|ms", udp)
-      expectUDPPacket(s"$testMetricKey1:30|ms", udp)
-      expectUDPPacket(s"$testMetricKey2:20|ms", udp)
+      doWithChannel(Map(testEntity -> testRecorder.collect(collectionContext)), (probe) ⇒ {
+        expectUDPPacket(s"$testMetricKey1:10|ms", probe)
+        expectUDPPacket(s"$testMetricKey1:30|ms", probe)
+        expectUDPPacket(s"$testMetricKey2:20|ms", probe)
+      })
     }
 
     "include the correspondent sampling rate when rendering multiple occurrences of the same value" in new SimpleSenderFixture {
@@ -69,8 +74,9 @@ class SimpleStatsDMetricsSenderSpec extends UDPBasedStatsDMetricSenderSpec("simp
       testRecorder.metricOne.record(10L)
       testRecorder.metricOne.record(10L)
 
-      val udp = setup(Map(testEntity -> testRecorder.collect(collectionContext)))
-      expectUDPPacket(s"$testMetricKey:10|ms|@0.5", udp)
+      doWithChannel(Map(testEntity -> testRecorder.collect(collectionContext)), (probe) ⇒ {
+        expectUDPPacket(s"$testMetricKey:10|ms|@0.5", probe)
+      })
     }
   }
 }
